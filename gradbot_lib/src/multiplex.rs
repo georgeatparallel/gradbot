@@ -37,29 +37,46 @@ fn session_audio_time_s(turn_start_time_s: f64, tts_relative_s: f64) -> f64 {
 /// Whether `buffer` ends in punctuation that might be mid-number ("$50,000",
 /// "6.1%") rather than a real sentence/list boundary — a digit immediately
 /// before a trailing `.` or `,`. The caller must check this *before*
-/// [`should_flush_to_tts`] and stash the buffer rather than flush it: the
-/// first-chunk rule must never split a number.
+/// [`split_complete_words`] and stash the buffer rather than split it: a
+/// number must never be sent across two separate sends.
 fn is_mid_number_punctuation(buffer: &str) -> bool {
     matches!(buffer.chars().last(), Some('.' | ','))
         && matches!(buffer.chars().rev().nth(1), Some('0'..='9'))
 }
 
-/// Whether the buffered text should be handed to TTS now.
+/// Splits `buffer` into the complete words at its start (safe to send to TTS
+/// now) and a possibly-partial trailing word (which must stay buffered until
+/// more text arrives).
 ///
-/// The first chunk of a turn flushes immediately, even mid-word: making TTS
-/// wait for a word boundary costs a whole extra LLM token before synthesis
-/// can even start (measured: 48% of turns waited >50ms on this). Later
-/// chunks still wait for a boundary, so "don't" and "well-known" stay
-/// intact. Callers must run [`is_mid_number_punctuation`] first — the
-/// mid-number stash takes precedence over this rule regardless of `is_first`.
-fn should_flush_to_tts(buffer: &str, is_first: bool) -> bool {
-    if is_first && !buffer.is_empty() {
-        return true;
+/// LLM tokens are typically space-*prefixed* (" Hello", " world"), so a
+/// completed word essentially never sits at the very *end* of the buffer —
+/// the space that would mark its end belongs to the *next* token. Flushing
+/// only when the buffer happens to end in a separator (as an earlier version
+/// of this logic did) can therefore leave a complete word — or a whole
+/// clause — stuck in the buffer indefinitely while TTS starves. Splitting at
+/// the last whitespace instead is correct regardless of where token
+/// boundaries fall: everything up to and including the last whitespace
+/// character is complete (nothing can still be appended to a word that has
+/// already been followed by a space), and only the tail after it might still
+/// grow.
+///
+/// A buffer whose last character is itself a word-ending separator (a space,
+/// or one of `. ! ? , \n`) has no trailing partial word at all, so the whole
+/// buffer comes back as `to_send`.
+///
+/// Returns `None` when no complete word exists yet — no whitespace anywhere
+/// in `buffer`, and it does not end in one of the separators above (or the
+/// buffer is empty). Callers must run [`is_mid_number_punctuation`] on the
+/// buffer *first*: the mid-number stash takes precedence over this split,
+/// since a `.`/`,` immediately after a digit is not reliably a word-ending
+/// separator.
+fn split_complete_words(buffer: &str) -> Option<(&str, &str)> {
+    let last = buffer.chars().last()?;
+    if last.is_whitespace() || matches!(last, '.' | '!' | '?' | ',' | '\n') {
+        return Some((buffer, ""));
     }
-    matches!(
-        buffer.chars().last(),
-        Some(' ' | '.' | '!' | '?' | ',' | '\n')
-    )
+    let (idx, ch) = buffer.char_indices().rev().find(|(_, c)| c.is_whitespace())?;
+    Some(buffer.split_at(idx + ch.len_utf8()))
 }
 
 /// Minimum time an unanswered tool call may be outstanding before we inject a
@@ -658,11 +675,6 @@ impl Session {
                         let mut streaming_session = streaming_session;
                         let mut first_word = true;
                         let mut first_text_sent = true;
-                        // Whether the next non-suppressed Text chunk is the first of
-                        // this turn. Consumed (set false) once that chunk has been
-                        // through the buffering decision below, regardless of
-                        // whether it flushed or was stashed as pending_numeric.
-                        let mut is_first_chunk = true;
                         let mut buffer = String::new();
                         // When the buffer ends with "<digit>." or "<digit>,", we can't
                         // tell if the punctuation is mid-number ($50,000 or 6.1%) or a
@@ -754,20 +766,20 @@ impl Session {
                                         }
                                     }
                                     buffer.push_str(&chunk);
-                                    // Mid-number punctuation must be stashed regardless
-                                    // of is_first_chunk — the first-chunk rule never gets
-                                    // a chance to split a number. Otherwise, send when we
-                                    // have a word boundary (ends with space or sentence
-                                    // punctuation), except the turn's first chunk, which
-                                    // flushes immediately to let TTS start synthesising
-                                    // without waiting on a boundary that may never come
-                                    // in time.
+                                    // Mid-number punctuation must be stashed before we
+                                    // ever try to split the buffer into words — a
+                                    // number must never be split across two sends.
+                                    // Otherwise, send every complete word as soon as
+                                    // it exists (never a partial one), keeping only
+                                    // the trailing partial word buffered.
                                     if is_mid_number_punctuation(&buffer) {
                                         // Stash — we need the next chunk to decide
                                         pending_numeric = Some(buffer.clone());
                                         buffer.clear();
-                                    } else if should_flush_to_tts(&buffer, is_first_chunk) {
-                                        tts_tx.send_text(&buffer).await?;
+                                    } else if let Some((to_send, to_keep)) =
+                                        split_complete_words(&buffer)
+                                    {
+                                        tts_tx.send_text(to_send).await?;
                                         if first_text_sent {
                                             llm_to_tts_tracer.point(
                                                 turn_idx,
@@ -778,9 +790,9 @@ impl Session {
                                             );
                                             first_text_sent = false;
                                         }
-                                        buffer.clear();
+                                        let to_keep = to_keep.to_string();
+                                        buffer = to_keep;
                                     }
-                                    is_first_chunk = false;
                                 }
                                 crate::llm::LlmResponseItem::ToolCall { call, handle } => {
                                     tracing::info!(?call, "LLM made tool call");
@@ -2160,44 +2172,61 @@ mod trace_tests {
     }
 
     #[test]
-    fn first_chunk_flushes_immediately_but_later_chunks_wait_for_a_boundary() {
-        use crate::multiplex::should_flush_to_tts;
+    fn splits_off_complete_words_and_keeps_the_trailing_partial_word() {
+        use crate::multiplex::split_complete_words;
 
-        assert!(
-            should_flush_to_tts("Hel", true),
-            "the first chunk must not wait, even mid-word"
-        );
-        assert!(
-            !should_flush_to_tts("lo wor", false),
-            "a later mid-word chunk must still wait"
-        );
-        assert!(
-            should_flush_to_tts("hello ", false),
-            "a later chunk ending in a space must flush"
-        );
-        assert!(
-            should_flush_to_tts("hello.", false),
-            "a later chunk ending in punctuation must flush"
-        );
-        assert!(
-            !should_flush_to_tts("", true),
-            "the first-chunk rule must not fire on an empty buffer"
+        // LLM tokens are space-prefixed, so a complete word ("Hello") sits
+        // *before* the last whitespace, not at the end of the buffer.
+        assert_eq!(
+            split_complete_words(" Hello world"),
+            Some((" Hello ", "world")),
+            "everything up to and including the last whitespace is complete; \
+             the trailing word may still grow"
         );
     }
 
     #[test]
-    fn mid_number_stash_takes_precedence_over_the_first_chunk_rule() {
-        use crate::multiplex::{is_mid_number_punctuation, should_flush_to_tts};
+    fn no_whitespace_means_no_complete_word_yet() {
+        use crate::multiplex::split_complete_words;
 
-        // "50," looks like a completed, flushable first chunk in isolation...
-        assert!(
-            should_flush_to_tts("50,", true),
-            "should_flush_to_tts alone would flush this — the caller must gate on \
-             is_mid_number_punctuation first"
+        assert_eq!(
+            split_complete_words("Hello"),
+            None,
+            "with no whitespace anywhere, nothing is known to be complete"
         );
-        // ...but it is also detected as possibly mid-number ("$50,000"), and the
-        // real llm_to_tts loop checks that *before* should_flush_to_tts, so it is
-        // stashed instead of sent — even though it is the turn's first chunk.
+    }
+
+    #[test]
+    fn punctuation_terminated_text_is_sent_in_full() {
+        use crate::multiplex::split_complete_words;
+
+        // A trailing separator (sentence punctuation or whitespace) means
+        // there is no partial word left dangling — the whole buffer is
+        // complete words.
+        assert_eq!(
+            split_complete_words("hello world."),
+            Some(("hello world.", "")),
+        );
+        assert_eq!(
+            split_complete_words("hello "),
+            Some(("hello ", "")),
+        );
+    }
+
+    #[test]
+    fn mid_number_stash_takes_precedence_over_the_word_split() {
+        use crate::multiplex::{is_mid_number_punctuation, split_complete_words};
+
+        // "50," looks like a complete, sendable buffer in isolation...
+        assert_eq!(
+            split_complete_words("50,"),
+            Some(("50,", "")),
+            "split_complete_words alone would send this — the caller must gate \
+             on is_mid_number_punctuation first"
+        );
+        // ...but it is also detected as possibly mid-number ("$50,000"), and
+        // the real llm_to_tts loop checks that *before* split_complete_words,
+        // so it is stashed instead of sent.
         assert!(
             is_mid_number_punctuation("50,"),
             "a digit before trailing '.' or ',' must be treated as possibly mid-number"
