@@ -101,7 +101,7 @@ pub use llm::{Llm, LlmConfig, ToolCall, ToolCallHandle, ToolDef, ToolResult};
 pub use multiplex::{
     DEFAULT_FLUSH_FOR_S, DEFAULT_MIN_LISTEN_BEFORE_FLUSH_S, DEFAULT_VAD_EOT_THRESHOLD, Event,
     MsgIn, MsgOut, OUTPUT_FRAME_SIZE, OUTPUT_SAMPLE_RATE, SessionConfig, SessionInputHandle,
-    SessionOutputHandle, start_session,
+    SessionOutputHandle, start_session, start_session_traced,
 };
 pub use speech_to_text::SttClient;
 pub use system_prompt::Lang;
@@ -992,7 +992,7 @@ impl GradbotClients {
         io_format: IoFormat,
         tracer: Tracer,
     ) -> Result<(SessionInputHandle, SessionOutputHandle)> {
-        start_session(
+        start_session_traced(
             self.tts_client.clone(),
             self.stt_client.clone(),
             self.llm.clone(),

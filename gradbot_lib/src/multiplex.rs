@@ -1563,7 +1563,32 @@ impl SessionOutputHandle {
 /// }
 /// // Returns Ok(None) when session ends normally
 /// ```
+///
+/// Preserves the crate's original five-argument signature so existing callers
+/// of this published crate are unaffected by the addition of latency tracing.
+/// Delegates to [`start_session_traced`] with tracing disabled; call that
+/// function directly when you need latency spans recorded.
 pub async fn start_session(
+    tts_client: Arc<TtsClient>,
+    stt_client: Arc<SttClient>,
+    llm: Arc<crate::llm::Llm>,
+    initial_config: Option<SessionConfig>,
+    io_format: crate::IoFormat,
+) -> Result<(SessionInputHandle, SessionOutputHandle)> {
+    start_session_traced(
+        tts_client,
+        stt_client,
+        llm,
+        initial_config,
+        io_format,
+        Tracer::disabled(),
+    )
+    .await
+}
+
+/// As [`start_session`], but records latency spans to `tracer`. Use this
+/// entry point for latency profiling; otherwise prefer [`start_session`].
+pub async fn start_session_traced(
     tts_client: Arc<TtsClient>,
     stt_client: Arc<SttClient>,
     llm: Arc<crate::llm::Llm>,

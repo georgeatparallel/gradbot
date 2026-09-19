@@ -241,7 +241,7 @@ pub async fn realtime(
             }
         };
 
-        let (input, output) = match gradbot::start_session(
+        let (input, output) = match gradbot::start_session_traced(
             state.tts_client.clone(),
             state.stt_client.clone(),
             state.llm.clone(),

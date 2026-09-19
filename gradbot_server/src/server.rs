@@ -94,7 +94,8 @@ async fn handle_connection_inner(
         }
     };
     let (input, output) =
-        gradbot::start_session(tts, stt, state.llm.clone(), None, io_format, tracer).await?;
+        gradbot::start_session_traced(tts, stt, state.llm.clone(), None, io_format, tracer)
+            .await?;
 
     let (ws_tx, ws_rx) = socket.split();
     let pending_tool_calls: PendingToolCalls = Arc::new(Mutex::new(HashMap::new()));
