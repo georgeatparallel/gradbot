@@ -1742,12 +1742,6 @@ async fn run(
                         }
                         let pcm_in = pcm.len();
                         let encoded = encoder.encode(&pcm)?;
-                        let mut attrs = serde_json::Map::new();
-                        attrs.insert("pcm_in".to_string(), serde_json::json!(pcm_in));
-                        attrs.insert(
-                            "bytes_out".to_string(),
-                            serde_json::json!(encoded.data.len()),
-                        );
                         // Finding E: Opus buffers until a full page, so empty
                         // results here are the 80ms output quantization.
                         //
@@ -1756,7 +1750,19 @@ async fn run(
                         // was forwarded (see `tts_to_client`). Adding it again
                         // here would double-count it — the raw TTS value never
                         // reaches this loop.
-                        out_tracer.point(turn_idx, "out.encode", start_s, 0, attrs);
+                        //
+                        // Guarded like the input site: this runs once per output
+                        // frame, so with tracing off the attrs allocation would
+                        // buy nothing.
+                        if out_tracer.is_enabled() {
+                            let mut attrs = serde_json::Map::new();
+                            attrs.insert("pcm_in".to_string(), serde_json::json!(pcm_in));
+                            attrs.insert(
+                                "bytes_out".to_string(),
+                                serde_json::json!(encoded.data.len()),
+                            );
+                            out_tracer.point(turn_idx, "out.encode", start_s, 0, attrs);
+                        }
                         if !encoded.data.is_empty() {
                             if first_audio_turn != Some(turn_idx) {
                                 // Supplies `O`. Deliberately after the
@@ -1888,7 +1894,11 @@ async fn run(
                     sender.send_audio(&audio).await?;
                     // Supplies `I` — the server-side anchor the benchmark joins
                     // on — and measures the 80ms input quantization (Finding D).
-                    if !audio.is_empty() {
+                    // `is_enabled` first: reading `samples_sent` means locking a
+                    // mutex shared with the audio send path, and this runs once
+                    // per input frame. With tracing off that lock and the attrs
+                    // allocation would buy nothing.
+                    if !audio.is_empty() && recv_tracer.is_enabled() {
                         let sample_idx = sender.0.lock().await.samples_sent;
                         let mut attrs = serde_json::Map::new();
                         attrs.insert("samples".to_string(), serde_json::json!(audio.len()));

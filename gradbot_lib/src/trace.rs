@@ -136,6 +136,18 @@ impl Tracer {
         (Self(Some(Arc::new(inner))), TraceCollector { handle })
     }
 
+    /// Whether this tracer records anything.
+    ///
+    /// `record` already short-circuits on a disabled tracer, so this exists for
+    /// one purpose: letting a *caller* skip work it would otherwise do only to
+    /// build the arguments. That matters on the per-frame sites, where
+    /// gathering `sample_idx` means taking a mutex shared with the audio send
+    /// path. Paying a lock and an allocation per frame to produce nothing is
+    /// not "free when disabled", so those sites guard on this first.
+    pub fn is_enabled(&self) -> bool {
+        self.0.is_some()
+    }
+
     /// Number of records dropped because the channel was full.
     pub fn dropped(&self) -> u64 {
         match &self.0 {
