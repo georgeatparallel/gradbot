@@ -260,13 +260,13 @@ fn collect_spans(trace: &[TraceRecord], server_turn: u64, i_t_us: u64) -> Vec<(S
         match rec.phase {
             Phase::Begin => open.entry(rec.span.clone()).or_default().push(rec.t_us),
             Phase::End => {
-                if let Some(starts) = open.get_mut(&rec.span) {
-                    if !starts.is_empty() {
-                        let start_t_us = starts.remove(0);
-                        let start_ms = (start_t_us as f64 - i_t_us as f64) / 1000.0;
-                        let end_ms = (rec.t_us as f64 - i_t_us as f64) / 1000.0;
-                        spans.push((rec.span.clone(), start_ms, end_ms));
-                    }
+                if let Some(starts) = open.get_mut(&rec.span)
+                    && !starts.is_empty()
+                {
+                    let start_t_us = starts.remove(0);
+                    let start_ms = (start_t_us as f64 - i_t_us as f64) / 1000.0;
+                    let end_ms = (rec.t_us as f64 - i_t_us as f64) / 1000.0;
+                    spans.push((rec.span.clone(), start_ms, end_ms));
                 }
             }
             Phase::Point => {}

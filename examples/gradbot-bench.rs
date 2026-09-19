@@ -681,9 +681,8 @@ async fn run_session(
             // the pacing clock and `ClientMark.sample_idx` are measured
             // against, matching the server's own running sample counter.
             let mut total_samples: u64 = 0;
-            let mut turn: u64 = 0;
 
-            for fturn in &manifest.turns {
+            for (turn, fturn) in (0_u64..).zip(manifest.turns.iter()) {
                 let (pcm, sr) = kaudio::pcm_decode(&fturn.wav).with_context(|| {
                     format!("decoding fixture wav {}", fturn.wav.display())
                 })?;
@@ -742,8 +741,6 @@ async fn run_session(
                     gap_streamed += chunk_len as u64;
                     total_samples += chunk_len as u64;
                 }
-
-                turn += 1;
             }
             Ok::<_, anyhow::Error>(())
         }
@@ -781,19 +778,19 @@ async fn run_session(
                         anyhow::bail!("Error from server: {error:?}");
                     }
                     oai::ServerEvent::ResponseAudioDelta { event_id: _, delta } => {
-                        if let Some(decoded) = opus_decoder.decode(&delta)? {
-                            if is_agent_audio(decoded) {
-                                let turn = current_turn.load(Ordering::SeqCst);
-                                if last_marked_turn != Some(turn) {
-                                    last_marked_turn = Some(turn);
-                                    marks.lock().unwrap().push(ClientMark {
-                                        repetition,
-                                        turn,
-                                        kind: MarkKind::FirstAgentAudio,
-                                        t_us: origin.elapsed().as_micros() as u64,
-                                        sample_idx: 0,
-                                    });
-                                }
+                        if let Some(decoded) = opus_decoder.decode(&delta)?
+                            && is_agent_audio(decoded)
+                        {
+                            let turn = current_turn.load(Ordering::SeqCst);
+                            if last_marked_turn != Some(turn) {
+                                last_marked_turn = Some(turn);
+                                marks.lock().unwrap().push(ClientMark {
+                                    repetition,
+                                    turn,
+                                    kind: MarkKind::FirstAgentAudio,
+                                    t_us: origin.elapsed().as_micros() as u64,
+                                    sample_idx: 0,
+                                });
                             }
                         }
                     }

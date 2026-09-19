@@ -1602,9 +1602,11 @@ pub async fn start_session_traced(
     let input_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let task = tokio::spawn(run(
-        tts_client,
-        stt_client,
-        llm,
+        SessionClients {
+            tts_client,
+            stt_client,
+            llm,
+        },
         initial_config,
         msg_out_tx,
         msg_in_rx,
@@ -1625,17 +1627,29 @@ pub async fn start_session_traced(
     Ok((input_handle, output_handle))
 }
 
-/// Internal: Run the voice AI multiplexing loop.
-async fn run(
+/// The three backend clients a session needs. Grouped only to keep `run`'s
+/// argument count under clippy's `too_many_arguments` threshold — this is a
+/// private helper, not part of the public API (contrast with `GradbotClients`).
+struct SessionClients {
     tts_client: Arc<TtsClient>,
     stt_client: Arc<SttClient>,
     llm: Arc<crate::llm::Llm>,
+}
+
+/// Internal: Run the voice AI multiplexing loop.
+async fn run(
+    clients: SessionClients,
     initial_config: Option<SessionConfig>,
     msg_out_tx: tokio::sync::mpsc::Sender<MsgOut>,
     mut msg_in_rx: tokio::sync::mpsc::Receiver<MsgIn>,
     io_format: crate::IoFormat,
     tracer: Tracer,
 ) -> Result<()> {
+    let SessionClients {
+        tts_client,
+        stt_client,
+        llm,
+    } = clients;
     let input_format = io_format.input;
     let output_format = io_format.output;
     let (tts_out_tx, mut tts_out_rx) =
