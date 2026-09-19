@@ -36,7 +36,7 @@ for D in "${POINTS[@]}"; do
   EXTRA=(); [ "$D" != unset ] && EXTRA=(--stt-extra-config "{\"delay_in_frames\": $D}")
   ./target/release/examples/gradbot-bench \
     --url ws://127.0.0.1:8123/v1/realtime \
-    --manifest docs/superpowers/fixtures/turn_taking.json \
+    --manifest docs/latency/fixtures/turn_taking.json \
     --repetitions "$REPS" "${EXTRA[@]}" \
     --out-marks "$OUT/m_$D.json" --trace-dir "$OUT/t_$D" --out-report "$OUT/r_$D.md" \
     > "$OUT/run_$D.log" 2>&1 || true
